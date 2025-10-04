@@ -8,7 +8,7 @@ use std::{
 use blake3::Hash;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{serde_as, DisplayFromStr, TimestampSecondsWithFrac};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SnapshotManifest {
@@ -22,11 +22,13 @@ struct DirectoryManifest {
     entries: BTreeMap<String, EntryManifest>,
 }
 
+#[serde_as]
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
 struct EntryManifest {
     #[serde(flatten)]
     ty: EntryType,
+    #[serde_as(as = "Option<TimestampSecondsWithFrac<String>>")]
     #[serde(default)]
     mtime: Option<SystemTime>,
     #[serde(default)]
