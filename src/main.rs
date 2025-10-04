@@ -67,7 +67,7 @@ fn write_blob(out_dir: &Utf8Path, data: &[u8]) -> std::io::Result<Hash> {
     let hash = blake3::hash(data);
     let out_path = out_dir.join(&hash.to_string());
     if !out_path.exists() {
-        println!("Writing new blob: {out_path:?}");
+        println!("Writing new blob: {out_path}");
         std::fs::write(&out_path, data)?;
     }
     Ok(hash)
@@ -148,7 +148,7 @@ fn main() {
     std::fs::create_dir_all(&snapshots_dir).expect("Failed to create snapshots directory");
     let snapshot_json =
         serde_json::to_vec(&snapshot).expect("snapshot should be JSON-serializable");
-    let hash = write_blob(&snapshots_dir, &snapshot_json);
+    let hash = write_blob(&snapshots_dir, &snapshot_json).unwrap();
 
-    println!("snapshot: {hash:?}");
+    println!("snapshot: {hash}");
 }
