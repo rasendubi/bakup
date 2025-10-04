@@ -71,7 +71,12 @@ fn process_dir(path: &Path, out_dir: &Path) -> std::io::Result<EntryManifest> {
         serde_json::to_vec(&manifest).expect("manifest should be convertible to JSON");
     let hash = blake3::hash(&manifest_json);
     let out_path = out_dir.join(hash.to_string());
-    std::fs::write(&out_path, manifest_json)?;
+
+    if out_path.exists() {
+        println!("Skipping non-modified directory: {path:?}");
+    } else {
+        std::fs::write(&out_path, manifest_json)?;
+    }
 
     Ok(EntryManifest {
         ty: EntryType::Directory,

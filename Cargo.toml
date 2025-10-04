@@ -7,4 +7,4 @@ edition = "2024"
 blake3 = { version = "1.8.2", features = ["serde"] }
 serde = "1.0.228"
 serde_json = "1.0.145"
-serde_with = "*"
+serde_with = "3.15.0"
