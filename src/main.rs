@@ -1,5 +1,7 @@
 use std::{
     collections::BTreeMap,
+    fs::symlink_metadata,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -21,16 +23,21 @@ struct DirectoryManifest {
 }
 
 #[serde_as]
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
 struct EntryManifest {
     #[serde(rename = "type")]
     ty: EntryType,
-    #[serde_as(as = "DisplayFromStr")]
-    content: Hash,
-    // TODO:
-    // owner uid, gid
-    // mode
-    // mtime
+    #[serde(default)]
+    mtime: Option<SystemTime>,
+    #[serde(default)]
+    uid: Option<u32>,
+    #[serde(default)]
+    gid: Option<u32>,
+    #[serde(default)]
+    mode: Option<u32>,
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    content: Vec<Hash>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,9 +60,15 @@ fn write_blob(out_dir: &Path, data: &[u8]) -> std::io::Result<Hash> {
 fn process_file(path: &Path, out_dir: &Path) -> std::io::Result<EntryManifest> {
     let content = std::fs::read(path)?;
     let hash = write_blob(out_dir, &content)?;
+    let metadata = symlink_metadata(path)?;
+
     Ok(EntryManifest {
         ty: EntryType::File,
-        content: hash,
+        mtime: metadata.modified().ok(),
+        uid: Some(metadata.uid()),
+        gid: Some(metadata.gid()),
+        mode: Some(metadata.mode()),
+        content: vec![hash],
     })
 }
 
@@ -82,9 +95,15 @@ fn process_dir(path: &Path, out_dir: &Path) -> std::io::Result<EntryManifest> {
         serde_json::to_vec(&manifest).expect("manifest should be convertible to JSON");
     let hash = write_blob(out_dir, &manifest_json)?;
 
+    let metadata = symlink_metadata(path)?;
+
     Ok(EntryManifest {
         ty: EntryType::Directory,
-        content: hash,
+        mtime: metadata.modified().ok(),
+        uid: Some(metadata.uid()),
+        gid: Some(metadata.gid()),
+        mode: Some(metadata.mode()),
+        content: vec![hash],
     })
 }
 
