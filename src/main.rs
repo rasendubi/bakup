@@ -1,20 +1,20 @@
 use std::{
     collections::BTreeMap,
-    fs::symlink_metadata,
+    fs::{symlink_metadata, Metadata},
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
     time::SystemTime,
 };
 
 use blake3::Hash;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
-use serde_with::{DisplayFromStr, serde_as};
+use serde_with::{serde_as, DisplayFromStr};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SnapshotManifest {
     // TODO: hostname, username
     time: SystemTime,
-    entries: BTreeMap<String, EntryManifest>,
+    entries: BTreeMap<Utf8PathBuf, EntryManifest>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -22,11 +22,10 @@ struct DirectoryManifest {
     entries: BTreeMap<String, EntryManifest>,
 }
 
-#[serde_as]
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
 struct EntryManifest {
-    #[serde(rename = "type")]
+    #[serde(flatten)]
     ty: EntryType,
     #[serde(default)]
     mtime: Option<SystemTime>,
@@ -36,17 +35,38 @@ struct EntryManifest {
     gid: Option<u32>,
     #[serde(default)]
     mode: Option<u32>,
-    #[serde_as(as = "Vec<DisplayFromStr>")]
-    content: Vec<Hash>,
 }
 
+impl EntryManifest {
+    pub fn new(metadata: &Metadata, ty: EntryType) -> EntryManifest {
+        EntryManifest {
+            ty,
+            mtime: metadata.modified().ok(),
+            uid: Some(metadata.uid()),
+            gid: Some(metadata.gid()),
+            mode: Some(metadata.mode()),
+        }
+    }
+}
+
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
 enum EntryType {
-    Directory,
-    File,
+    Directory {
+        #[serde_as(as = "Vec<DisplayFromStr>")]
+        content: Vec<Hash>,
+    },
+    File {
+        #[serde_as(as = "Vec<DisplayFromStr>")]
+        content: Vec<Hash>,
+    },
+    Symlink {
+        target: Utf8PathBuf,
+    },
 }
 
-fn write_blob(out_dir: &Path, data: &[u8]) -> std::io::Result<Hash> {
+fn write_blob(out_dir: &Utf8Path, data: &[u8]) -> std::io::Result<Hash> {
     let hash = blake3::hash(data);
     let out_path = out_dir.join(&hash.to_string());
     if out_path.exists() {
@@ -57,38 +77,32 @@ fn write_blob(out_dir: &Path, data: &[u8]) -> std::io::Result<Hash> {
     Ok(hash)
 }
 
-fn process_file(path: &Path, out_dir: &Path) -> std::io::Result<EntryManifest> {
+fn process_file(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryManifest> {
     let content = std::fs::read(path)?;
     let hash = write_blob(out_dir, &content)?;
     let metadata = symlink_metadata(path)?;
 
-    Ok(EntryManifest {
-        ty: EntryType::File,
-        mtime: metadata.modified().ok(),
-        uid: Some(metadata.uid()),
-        gid: Some(metadata.gid()),
-        mode: Some(metadata.mode()),
-        content: vec![hash],
-    })
+    Ok(EntryManifest::new(
+        &metadata,
+        EntryType::File {
+            content: vec![hash],
+        },
+    ))
 }
 
-fn process_dir(path: &Path, out_dir: &Path) -> std::io::Result<EntryManifest> {
+fn process_dir(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryManifest> {
     let mut manifest = DirectoryManifest {
         entries: BTreeMap::new(),
     };
 
-    for entry in path.read_dir()? {
+    for entry in path.read_dir_utf8()? {
         let entry = entry?;
 
         let entry_manifest = process_path(&entry.path(), out_dir)?;
 
-        manifest.entries.insert(
-            entry
-                .file_name()
-                .into_string()
-                .expect("name should be a valid UTF-8"),
-            entry_manifest,
-        );
+        manifest
+            .entries
+            .insert(entry.file_name().to_owned(), entry_manifest);
     }
 
     let manifest_json =
@@ -97,30 +111,31 @@ fn process_dir(path: &Path, out_dir: &Path) -> std::io::Result<EntryManifest> {
 
     let metadata = symlink_metadata(path)?;
 
-    Ok(EntryManifest {
-        ty: EntryType::Directory,
-        mtime: metadata.modified().ok(),
-        uid: Some(metadata.uid()),
-        gid: Some(metadata.gid()),
-        mode: Some(metadata.mode()),
-        content: vec![hash],
-    })
+    Ok(EntryManifest::new(
+        &metadata,
+        EntryType::Directory {
+            content: vec![hash],
+        },
+    ))
 }
 
-fn process_path(path: &Path, out_dir: &Path) -> std::io::Result<EntryManifest> {
+fn process_path(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryManifest> {
     let metadata = path.symlink_metadata()?;
     if metadata.is_file() {
         process_file(path, out_dir)
     } else if metadata.is_dir() {
         process_dir(path, out_dir)
+    } else if metadata.is_symlink() {
+        let target = path.read_link_utf8()?;
+        Ok(EntryManifest::new(&metadata, EntryType::Symlink { target }))
     } else {
         unreachable!("process_path should be called on either file or directory");
     }
 }
 
 fn main() {
-    let mut args = std::env::args_os();
-    let out_dir = PathBuf::from(args.nth(1).expect("No output directory provided"));
+    let mut args = std::env::args();
+    let out_dir = Utf8PathBuf::from(args.nth(1).expect("No output directory provided"));
     std::fs::create_dir_all(&out_dir).expect("Failed to create output directory");
 
     let mut snapshot = SnapshotManifest {
@@ -128,16 +143,12 @@ fn main() {
         entries: BTreeMap::new(),
     };
     for path in args {
-        let path = std::path::absolute(PathBuf::from(path)).expect("Failed to get absolute path");
+        let path =
+            camino::absolute_utf8(Utf8PathBuf::from(path)).expect("Failed to get absolute path");
 
         let entry = process_path(&path, &out_dir).expect("Failed to process path");
 
-        snapshot.entries.insert(
-            path.to_str()
-                .expect("path should be valid UTF-8")
-                .to_owned(),
-            entry,
-        );
+        snapshot.entries.insert(path, entry);
     }
 
     let snapshots_dir = out_dir.join("snapshots");
