@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    fs::{symlink_metadata, Metadata},
-    os::unix::fs::MetadataExt,
-    time::SystemTime,
-};
+use std::{collections::BTreeMap, fs::Metadata, os::unix::fs::MetadataExt, time::SystemTime};
 
 use blake3::Hash;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -71,28 +66,38 @@ enum EntryType {
 fn write_blob(out_dir: &Utf8Path, data: &[u8]) -> std::io::Result<Hash> {
     let hash = blake3::hash(data);
     let out_path = out_dir.join(&hash.to_string());
-    if out_path.exists() {
-        println!("Skipping non-modified blob: {out_path:?}");
-    } else {
+    if !out_path.exists() {
+        println!("Writing new blob: {out_path:?}");
         std::fs::write(&out_path, data)?;
     }
     Ok(hash)
 }
 
-fn process_file(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryManifest> {
-    let content = std::fs::read(path)?;
-    let hash = write_blob(out_dir, &content)?;
-    let metadata = symlink_metadata(path)?;
+fn process_path(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryManifest> {
+    let metadata = path.symlink_metadata()?;
+    let ty = if metadata.is_file() {
+        process_file(path, out_dir)?
+    } else if metadata.is_dir() {
+        process_dir(path, out_dir)?
+    } else if metadata.is_symlink() {
+        process_symlink(path)?
+    } else {
+        unreachable!("process_path should be called on either file or directory");
+    };
 
-    Ok(EntryManifest::new(
-        &metadata,
-        EntryType::File {
-            content: vec![hash],
-        },
-    ))
+    Ok(EntryManifest::new(&metadata, ty))
 }
 
-fn process_dir(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryManifest> {
+fn process_file(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryType> {
+    let content = std::fs::read(path)?;
+    let hash = write_blob(out_dir, &content)?;
+
+    Ok(EntryType::File {
+        content: vec![hash],
+    })
+}
+
+fn process_dir(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryType> {
     let mut manifest = DirectoryManifest {
         entries: BTreeMap::new(),
     };
@@ -111,28 +116,14 @@ fn process_dir(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryMani
         serde_json::to_vec(&manifest).expect("manifest should be convertible to JSON");
     let hash = write_blob(out_dir, &manifest_json)?;
 
-    let metadata = symlink_metadata(path)?;
-
-    Ok(EntryManifest::new(
-        &metadata,
-        EntryType::Directory {
-            content: vec![hash],
-        },
-    ))
+    Ok(EntryType::Directory {
+        content: vec![hash],
+    })
 }
 
-fn process_path(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryManifest> {
-    let metadata = path.symlink_metadata()?;
-    if metadata.is_file() {
-        process_file(path, out_dir)
-    } else if metadata.is_dir() {
-        process_dir(path, out_dir)
-    } else if metadata.is_symlink() {
-        let target = path.read_link_utf8()?;
-        Ok(EntryManifest::new(&metadata, EntryType::Symlink { target }))
-    } else {
-        unreachable!("process_path should be called on either file or directory");
-    }
+fn process_symlink(path: &Utf8Path) -> Result<EntryType, std::io::Error> {
+    let target = path.read_link_utf8()?;
+    Ok(EntryType::Symlink { target })
 }
 
 fn main() {
