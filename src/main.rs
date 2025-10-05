@@ -74,7 +74,7 @@ enum EntryType {
 
 fn write_blob(out_dir: &Utf8Path, data: &[u8]) -> std::io::Result<Hash> {
     let hash = blake3::hash(data);
-    let out_path = out_dir.join(&hash.to_string());
+    let out_path = out_dir.join(hash.to_string());
     if !out_path.exists() {
         println!("Writing new blob: {out_path}");
         std::fs::write(&out_path, data)?;
@@ -114,7 +114,7 @@ fn process_dir(path: &Utf8Path, out_dir: &Utf8Path) -> std::io::Result<EntryType
     for entry in path.read_dir_utf8()? {
         let entry = entry?;
 
-        let entry_manifest = process_path(&entry.path(), out_dir)?;
+        let entry_manifest = process_path(entry.path(), out_dir)?;
 
         manifest
             .entries
@@ -146,7 +146,7 @@ fn main() {
                 entries: BTreeMap::new(),
             };
             for path in cmd.paths {
-                let path = camino::absolute_utf8(Utf8PathBuf::from(path))
+                let path = camino::absolute_utf8(path)
                     .expect("Failed to get absolute path");
 
                 let entry = process_path(&path, &cmd.remote).expect("Failed to process path");
