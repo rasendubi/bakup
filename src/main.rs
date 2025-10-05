@@ -1,13 +1,22 @@
+mod cli;
+
 use std::{collections::BTreeMap, fs::Metadata, os::unix::fs::MetadataExt, time::SystemTime};
 
 use blake3::Hash;
 use camino::{Utf8Path, Utf8PathBuf};
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, TimestampSecondsWithFrac};
 
+use crate::cli::{Cli, Command};
+
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 struct SnapshotManifest {
     // TODO: hostname, username
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde_as(as = "TimestampSecondsWithFrac<String>")]
     time: SystemTime,
     entries: BTreeMap<Utf8PathBuf, EntryManifest>,
 }
@@ -127,28 +136,31 @@ fn process_symlink(path: &Utf8Path) -> Result<EntryType, std::io::Error> {
 }
 
 fn main() {
-    let mut args = std::env::args();
-    let out_dir = Utf8PathBuf::from(args.nth(1).expect("No output directory provided"));
-    std::fs::create_dir_all(&out_dir).expect("Failed to create output directory");
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Snapshot(cmd) => {
+            std::fs::create_dir_all(&cmd.remote).expect("Failed to create output directory");
+            let mut snapshot = SnapshotManifest {
+                name: cmd.name,
+                time: SystemTime::now(),
+                entries: BTreeMap::new(),
+            };
+            for path in cmd.paths {
+                let path = camino::absolute_utf8(Utf8PathBuf::from(path))
+                    .expect("Failed to get absolute path");
 
-    let mut snapshot = SnapshotManifest {
-        time: SystemTime::now(),
-        entries: BTreeMap::new(),
-    };
-    for path in args {
-        let path =
-            camino::absolute_utf8(Utf8PathBuf::from(path)).expect("Failed to get absolute path");
+                let entry = process_path(&path, &cmd.remote).expect("Failed to process path");
 
-        let entry = process_path(&path, &out_dir).expect("Failed to process path");
+                snapshot.entries.insert(path, entry);
+            }
 
-        snapshot.entries.insert(path, entry);
+            let snapshots_dir = cmd.remote.join("snapshots");
+            std::fs::create_dir_all(&snapshots_dir).expect("Failed to create snapshots directory");
+            let snapshot_json =
+                serde_json::to_vec(&snapshot).expect("snapshot should be JSON-serializable");
+            let hash = write_blob(&snapshots_dir, &snapshot_json).unwrap();
+
+            println!("snapshot: {hash}");
+        }
     }
-
-    let snapshots_dir = out_dir.join("snapshots");
-    std::fs::create_dir_all(&snapshots_dir).expect("Failed to create snapshots directory");
-    let snapshot_json =
-        serde_json::to_vec(&snapshot).expect("snapshot should be JSON-serializable");
-    let hash = write_blob(&snapshots_dir, &snapshot_json).unwrap();
-
-    println!("snapshot: {hash}");
 }
