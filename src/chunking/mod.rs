@@ -3,5 +3,6 @@ mod aes_gear_table;
 mod chunker_state;
 mod stream_chunker;
 
+pub use aes_gear::AesGearConfig;
 pub use chunker_state::ChunkerConfig;
 pub use stream_chunker::StreamChunker;

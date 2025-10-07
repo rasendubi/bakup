@@ -39,7 +39,6 @@ impl<'a> AesGearHash<'a> {
     #[inline]
     pub fn hash(&self) -> u64 {
         // This is doing a reduced AES-128 on gear hash value. AES is used as a PRF primitive.
-
         let mut block = [0u8; 16];
         block[0..8].copy_from_slice(&self.state.to_le_bytes());
         let mut block = GenericArray::from(block);

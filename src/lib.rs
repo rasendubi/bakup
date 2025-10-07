@@ -1,1 +1,1 @@
-mod chunking;
+pub mod chunking;

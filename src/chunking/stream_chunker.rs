@@ -31,7 +31,7 @@ impl<'a, R: BufRead> Iterator for StreamChunker<'a, R> {
 
         loop {
             let buf = match self.reader.fill_buf() {
-                Ok(buf) if buf.is_empty() => {
+                Ok([]) => {
                     // reached end of input
                     self.ended = true;
                     return if data.is_empty() {
