@@ -1,19 +1,15 @@
 mod cli;
 
-use std::{
-    collections::BTreeMap,
-    fs::{File, Metadata},
-    io::BufReader,
-    os::unix::fs::MetadataExt,
-    time::SystemTime,
-};
+use std::{fs::File, io::BufReader, os::unix::fs::MetadataExt, time::SystemTime};
 
 use aes::cipher::KeyInit;
+use anyhow::bail;
 use bakup::chunking::{AesGearConfig, ChunkerConfig, StreamChunker};
 use blake3::Hash;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
-use humansize::format_size;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, TimestampSecondsWithFrac};
 
@@ -27,18 +23,14 @@ struct SnapshotManifest {
     name: Option<String>,
     #[serde_as(as = "TimestampSecondsWithFrac<String>")]
     time: SystemTime,
-    entries: BTreeMap<Utf8PathBuf, EntryManifest>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DirectoryManifest {
-    entries: BTreeMap<String, EntryManifest>,
+    entries: Vec<EntryManifest>,
 }
 
 #[serde_as]
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
 struct EntryManifest {
+    path: Utf8PathBuf,
     #[serde(flatten)]
     ty: EntryType,
     #[serde_as(as = "Option<TimestampSecondsWithFrac<String>>")]
@@ -52,26 +44,11 @@ struct EntryManifest {
     mode: Option<u32>,
 }
 
-impl EntryManifest {
-    pub fn new(metadata: &Metadata, ty: EntryType) -> EntryManifest {
-        EntryManifest {
-            ty,
-            mtime: metadata.modified().ok(),
-            uid: Some(metadata.uid()),
-            gid: Some(metadata.gid()),
-            mode: Some(metadata.mode()),
-        }
-    }
-}
-
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum EntryType {
-    Directory {
-        #[serde_as(as = "Vec<DisplayFromStr>")]
-        content: Vec<Hash>,
-    },
+    Directory,
     File {
         #[serde_as(as = "Vec<DisplayFromStr>")]
         content: Vec<Hash>,
@@ -91,70 +68,18 @@ impl SnapshotContext<'_> {
         let hash = blake3::hash(data);
         let out_path = self.out_dir.join(hash.to_string());
         if !out_path.exists() {
-            println!(
-                "Writing new blob: {out_path} ({})",
-                format_size(data.len(), humansize::BINARY)
-            );
+            // println!(
+            //     "Writing new blob: {out_path} ({})",
+            //     format_size(data.len(), humansize::BINARY)
+            // );
             std::fs::write(&out_path, data)?;
         } else {
-            println!(
-                "Skipping blob:    {out_path} ({})",
-                format_size(data.len(), humansize::BINARY)
-            );
+            // println!(
+            //     "Skipping blob:    {out_path} ({})",
+            //     format_size(data.len(), humansize::BINARY)
+            // );
         }
         Ok(hash)
-    }
-
-    fn process_path(&self, path: &Utf8Path) -> std::io::Result<EntryManifest> {
-        let metadata = path.symlink_metadata()?;
-        let ty = if metadata.is_file() {
-            self.process_file(path)?
-        } else if metadata.is_dir() {
-            self.process_dir(path)?
-        } else if metadata.is_symlink() {
-            self.process_symlink(path)?
-        } else {
-            unreachable!("process_path should be called on either file or directory");
-        };
-
-        Ok(EntryManifest::new(&metadata, ty))
-    }
-
-    fn process_file(&self, path: &Utf8Path) -> std::io::Result<EntryType> {
-        let hashes = StreamChunker::new(&self.chunker_config, BufReader::new(File::open(path)?))
-            .map(|it| it.and_then(|chunk| self.write_blob(&chunk)))
-            .collect::<std::io::Result<Vec<_>>>()?;
-
-        Ok(EntryType::File { content: hashes })
-    }
-
-    fn process_dir(&self, path: &Utf8Path) -> std::io::Result<EntryType> {
-        let mut manifest = DirectoryManifest {
-            entries: BTreeMap::new(),
-        };
-
-        for entry in path.read_dir_utf8()? {
-            let entry = entry?;
-
-            let entry_manifest = self.process_path(entry.path())?;
-
-            manifest
-                .entries
-                .insert(entry.file_name().to_owned(), entry_manifest);
-        }
-
-        let manifest_json =
-            serde_json::to_vec(&manifest).expect("manifest should be convertible to JSON");
-        let hash = self.write_blob(&manifest_json)?;
-
-        Ok(EntryType::Directory {
-            content: vec![hash],
-        })
-    }
-
-    fn process_symlink(&self, path: &Utf8Path) -> Result<EntryType, std::io::Error> {
-        let target = path.read_link_utf8()?;
-        Ok(EntryType::Symlink { target })
     }
 }
 
@@ -179,18 +104,94 @@ fn main() {
             };
 
             std::fs::create_dir_all(&cmd.remote).expect("Failed to create output directory");
-            let mut snapshot = SnapshotManifest {
+
+            let progress = MultiProgress::new();
+            let global_progress = progress
+                .add(ProgressBar::no_length().with_style(
+                    ProgressStyle::with_template("{bytes} ({bytes_per_sec})").unwrap(),
+                ));
+
+            let mut entries = cmd
+                .paths
+                .par_iter()
+                .filter_map(|it| camino::absolute_utf8(it).ok())
+                .flat_map(|it| walkdir::WalkDir::new(it).into_iter().par_bridge())
+                .map(
+                    |entry| {
+                        let entry = entry?;
+
+                        let Ok(path) = Utf8PathBuf::try_from(entry.path().to_path_buf()) else {
+                            bail!("path should be valid UTF-8");
+                        };
+                        let metadata = entry.metadata()?;
+                        let mtime = metadata.modified().ok();
+                        let _dev = metadata.dev();
+                        let _inode = metadata.ino();
+                        let size = metadata.size();
+
+                        let file_type = entry.file_type();
+                        let ty = if file_type.is_dir() {
+                            EntryType::Directory
+                        } else if file_type.is_file() {
+                            let my_progress = progress.add(
+                                ProgressBar::new(size)
+                                    .with_style(
+                                        ProgressStyle::with_template(
+                                            "{prefix} {wide_bar} {bytes}/{total_bytes} ({bytes_per_sec})",
+                                        )
+                                        .unwrap(),
+                                    )
+                                    .with_message(entry.file_name().to_str().unwrap().to_owned())
+                                    .with_prefix(entry.file_name().to_str().unwrap().to_owned()),
+                            );
+
+                            let hashes = StreamChunker::new(
+                                &ctx.chunker_config,
+                                BufReader::new(File::open(&path)?),
+                            )
+                            .map(|it| {
+                                it.and_then(|chunk| {
+                                    let hash = ctx.write_blob(&chunk);
+                                    my_progress.inc(chunk.len() as u64);
+                                    global_progress.inc(chunk.len() as u64);
+                                    hash
+                                })
+                            })
+                            .collect::<std::io::Result<Vec<_>>>()?;
+
+                            my_progress.finish();
+                            progress.remove(&my_progress);
+
+                            EntryType::File { content: hashes }
+                        } else if file_type.is_symlink() {
+                            let target = path.read_link()?;
+                            EntryType::Symlink {
+                                target: target.try_into()?,
+                            }
+                        } else {
+                            unreachable!();
+                        };
+
+                        Ok::<_, anyhow::Error>(EntryManifest {
+                            path,
+                            ty,
+                            mtime,
+                            uid: Some(metadata.uid()),
+                            gid: Some(metadata.gid()),
+                            mode: Some(metadata.mode()),
+                        })
+                    },
+                )
+                .collect::<anyhow::Result<Vec<_>>>()
+                .unwrap();
+
+            entries.par_sort_unstable_by(|a, b| a.path.cmp(&b.path));
+
+            let snapshot = SnapshotManifest {
                 name: cmd.name,
                 time: SystemTime::now(),
-                entries: BTreeMap::new(),
+                entries,
             };
-            for path in cmd.paths {
-                let path = camino::absolute_utf8(path).expect("Failed to get absolute path");
-
-                let entry = ctx.process_path(&path).expect("Failed to process path");
-
-                snapshot.entries.insert(path, entry);
-            }
 
             let snapshots_dir = cmd.remote.join("snapshots");
             std::fs::create_dir_all(&snapshots_dir).expect("Failed to create snapshots directory");
