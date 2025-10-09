@@ -4,14 +4,21 @@ use std::{fs::File, io::BufReader, os::unix::fs::MetadataExt, time::SystemTime};
 
 use aes::cipher::KeyInit;
 use anyhow::bail;
-use bakup::chunking::{AesGearConfig, ChunkerConfig, StreamChunker};
-use blake3::Hash;
-use camino::{Utf8Path, Utf8PathBuf};
+use bakup::{
+    cas::{ContentAddressableStorage, DirectoryCas},
+    chunking::{AesGearConfig, ChunkerConfig, StreamChunker},
+};
+use bytes::Bytes;
+use camino::Utf8PathBuf;
 use clap::Parser;
+use const_hex::ToHexExt;
+use digest::Output;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, TimestampSecondsWithFrac};
+use serde_with::{
+    serde_as, serde_conv, TimestampSecondsWithFrac,
+};
 
 use crate::cli::{Cli, Command};
 
@@ -50,36 +57,33 @@ struct EntryManifest {
 enum EntryType {
     Directory,
     File {
-        #[serde_as(as = "Vec<DisplayFromStr>")]
-        content: Vec<Hash>,
+        #[serde_as(as = "Vec<HexHash>")]
+        content: Vec<Output<blake3::Hasher>>,
     },
     Symlink {
         target: Utf8PathBuf,
     },
 }
 
+serde_conv!(
+    HexHash,
+    Output<blake3::Hasher>,
+    |hash: &Output<blake3::Hasher>| hash.encode_hex(),
+    |s: &str| -> Result<_, const_hex::FromHexError> {
+        let mut hash = Output::<blake3::Hasher>::default();
+        const_hex::decode_to_slice(s, &mut hash)?;
+        Ok(hash)
+    }
+);
+
 struct SnapshotContext<'a> {
-    out_dir: &'a Utf8Path,
+    out_dir: DirectoryCas<blake3::Hasher>,
     chunker_config: ChunkerConfig<'a>,
 }
 
 impl SnapshotContext<'_> {
-    fn write_blob(&self, data: &[u8]) -> std::io::Result<Hash> {
-        let hash = blake3::hash(data);
-        let out_path = self.out_dir.join(hash.to_string());
-        if !out_path.exists() {
-            // println!(
-            //     "Writing new blob: {out_path} ({})",
-            //     format_size(data.len(), humansize::BINARY)
-            // );
-            std::fs::write(&out_path, data)?;
-        } else {
-            // println!(
-            //     "Skipping blob:    {out_path} ({})",
-            //     format_size(data.len(), humansize::BINARY)
-            // );
-        }
-        Ok(hash)
+    fn write_blob(&self, data: Bytes) -> std::io::Result<Output<blake3::Hasher>> {
+        self.out_dir.store(data)
     }
 }
 
@@ -99,7 +103,7 @@ fn main() {
             );
 
             let ctx = SnapshotContext {
-                out_dir: &cmd.remote,
+                out_dir: DirectoryCas::new(&cmd.remote),
                 chunker_config,
             };
 
@@ -151,9 +155,12 @@ fn main() {
                             )
                             .map(|it| {
                                 it.and_then(|chunk| {
-                                    let hash = ctx.write_blob(&chunk);
-                                    my_progress.inc(chunk.len() as u64);
-                                    global_progress.inc(chunk.len() as u64);
+                                    let len = chunk.len() as u64;
+                                    let chunk = Bytes::from(chunk);
+                                    let hash = ctx.write_blob(chunk);
+                                    my_progress.inc(len);
+                                    global_progress.inc(len);
+
                                     hash
                                 })
                             })
