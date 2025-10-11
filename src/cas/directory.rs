@@ -22,7 +22,7 @@ impl<H: Digest> DirectoryCas<H> {
     }
 
     fn path_for(&self, hash: &Output<H>) -> Utf8PathBuf {
-        self.base_path.join(format!("{:x?}", hash.as_slice()))
+        self.base_path.join(const_hex::encode(hash))
     }
 }
 

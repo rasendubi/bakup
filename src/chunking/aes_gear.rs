@@ -1,6 +1,6 @@
 use aes::{
-    cipher::{generic_array::GenericArray, BlockEncrypt},
     Aes128Enc,
+    cipher::{BlockEncrypt, generic_array::GenericArray},
 };
 
 use crate::chunking::aes_gear_table::DEFAULT_TABLE;

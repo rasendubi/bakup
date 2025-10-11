@@ -16,9 +16,7 @@ use digest::Output;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_with::{
-    serde_as, serde_conv, TimestampSecondsWithFrac,
-};
+use serde_with::{TimestampSecondsWithFrac, serde_as, serde_conv};
 
 use crate::cli::{Cli, Command};
 
