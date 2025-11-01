@@ -18,6 +18,8 @@ pub struct PackWriter<W, const HASH_SIZE: usize> {
     index: Vec<IndexEntry<HASH_SIZE>>,
 }
 
+// TODO: pack files need some kind of header
+
 impl<W: Write, const HASH_SIZE: usize> PackWriter<W, HASH_SIZE> {
     pub fn new(writer: W) -> PackWriter<W, HASH_SIZE> {
         PackWriter {

@@ -1,0 +1,26 @@
+[package]
+name = "bakup"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes = "0.8.4"
+anyhow = "1.0.100"
+blake3 = { version = "1.8.2", features = ["digest", "serde", "traits-preview"] }
+bytes = "1.10.1"
+camino = { version = "1.2.1", features = ["serde1"] }
+clap = { version = "4.5.48", features = ["derive"] }
+const-hex = "1.16.0"
+digest = "0.10.7"
+generic-array = { version = "0.14.7", features = ["serde"] }
+indicatif = { version = "0.18.0", features = ["rayon"] }
+itertools = "0.14.0"
+rayon = "1.11.0"
+serde = "1.0.228"
+serde_json = "1.0.145"
+serde_with = { version = "3.15.0", features = ["hex"] }
+tracing = "0.1.41"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+proptest = "1.8.0"
