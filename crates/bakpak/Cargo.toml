@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aead = { version = "0.5.2", default-features = false }
 arrayvec = { version = "0.7.6", default-features = false, features = ["zeroize"] }
 blake3 = { version = "1.8.2", default-features = false, features = ["std"] }
-chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc", "std"] }
+chacha20 = { version = "0.9.1", default-features = false, features = ["zeroize"] }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "zeroize"] }
 generic-array = { version = "0.14.7", default-features = false, features = ["zeroize"] }
 rand_core = { version = "0.6.3", default-features = false, features = ["getrandom"] }

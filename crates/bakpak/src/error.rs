@@ -5,8 +5,8 @@ pub enum Error {
     TooManyRecipients,
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    EncryptionError(#[from] chacha20poly1305::Error),
+    #[error("encryption error")]
+    EncryptionError,
 }
 
 impl From<Error> for std::io::Error {
@@ -15,5 +15,11 @@ impl From<Error> for std::io::Error {
             Error::Io(err) => err,
             err => std::io::Error::other(err),
         }
+    }
+}
+
+impl From<aead::Error> for Error {
+    fn from(_: aead::Error) -> Self {
+        Error::EncryptionError
     }
 }

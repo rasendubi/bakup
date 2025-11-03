@@ -1,12 +1,12 @@
 use std::io::Write;
 
+use aead::{AeadCore, AeadInPlace, KeyInit};
 use arrayvec::ArrayVec;
-use chacha20poly1305::{aead::AeadMutInPlace, AeadCore, ChaCha20Poly1305, KeyInit};
 use ed25519_dalek::ed25519::signature::Signer;
 use generic_array::{typenum::Unsigned, GenericArray};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::encryptor::EncryptionKey;
+use crate::{chacha20_blake3::ChaCha20Blake3, encryptor::EncryptionKey};
 
 const SIGNATURE_DOMAIN_LEN: usize = 15;
 const SIGNATURE_DOMAIN: &[u8; SIGNATURE_DOMAIN_LEN] = b"bakpak segment\0";
@@ -19,7 +19,7 @@ type Segment = Box<
         {
             SEGMENT_SIZE
                 + ed25519_dalek::Signature::BYTE_SIZE
-                + <ChaCha20Poly1305 as AeadCore>::TagSize::USIZE
+                + <ChaCha20Blake3 as AeadCore>::TagSize::USIZE
         },
     >,
 >;
@@ -128,7 +128,7 @@ impl StreamState {
             .try_extend_from_slice(&signature.to_bytes())
             .unwrap();
 
-        let mut cipher = ChaCha20Poly1305::new(&self.encryption_key);
+        let cipher = ChaCha20Blake3::new(&self.encryption_key);
         &cipher as &dyn ZeroizeOnDrop;
 
         let tag = cipher.encrypt_in_place_detached(
